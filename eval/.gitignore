@@ -1,0 +1,12 @@
+# Everything under these folders is either the user's own images or generated
+# by the scripts, so none of it belongs in git.
+images/authentic/*
+images/watermarked/*
+images/modified/*
+results/*
+!.gitkeep
+!*/.gitkeep
+
+.venv/
+__pycache__/
+.DS_Store
