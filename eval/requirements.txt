@@ -1,0 +1,14 @@
+# Dependencies for the TrustMark robustness experiment.
+#
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# To evaluate the TrustMark code in this repository rather than the published
+# package, also run:  pip install -e ../python
+
+trustmark>=0.9.0      # pulls in torch, torchvision, lightning, omegaconf, numpy
+pillow>=9.0
+matplotlib>=3.6
+
+# Optional: uncomment to read .heic photos straight off an iPhone.
+# pillow-heif>=0.13
