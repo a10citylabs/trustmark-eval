@@ -10,5 +10,9 @@ trustmark>=0.9.0      # pulls in torch, torchvision, lightning, omegaconf, numpy
 pillow>=9.0
 matplotlib>=3.6
 
+# The AI sharpening edit runs on the torch that trustmark already installs, and
+# downloads its own ~4.7 MB model file into eval/models/ on first use. Nothing
+# extra to install.
+
 # Optional: uncomment to read .heic photos straight off an iPhone.
 # pillow-heif>=0.13
