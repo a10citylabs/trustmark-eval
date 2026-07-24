@@ -7,6 +7,9 @@ results/*
 !.gitkeep
 !*/.gitkeep
 
+# Downloaded weights for the AI sharpening model.
+models/
+
 .venv/
 __pycache__/
 .DS_Store
