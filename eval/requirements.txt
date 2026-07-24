@@ -10,9 +10,18 @@ trustmark>=0.9.0      # pulls in torch, torchvision, lightning, omegaconf, numpy
 pillow>=9.0
 matplotlib>=3.6
 
+# The face-swap edit needs OpenCV, for the face detector and the Poisson blend.
+# The upper bound is trustmark's doing: it pins numpy<2, and OpenCV 4.13 and
+# newer ask for numpy>=2, so pip reports a conflict. Newer OpenCV does work at
+# runtime if you already have it - the version cap just keeps the install of
+# this file clean. Leave the line out entirely and 02_edit.py says so and skips
+# that one edit.
+opencv-python>=4.5.4,<4.12
+
 # The AI sharpening edit runs on the torch that trustmark already installs, and
-# downloads its own ~4.7 MB model file into eval/models/ on first use. Nothing
-# extra to install.
+# downloads its own ~4.7 MB model file into eval/models/ on first use. The face
+# detector for the face swap is another 230 KB into the same folder. Nothing
+# else to install.
 
 # Optional: uncomment to read .heic photos straight off an iPhone.
 # pillow-heif>=0.13

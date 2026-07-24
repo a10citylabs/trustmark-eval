@@ -18,6 +18,12 @@ Reported per condition:
     as a mean, a 10th percentile and a worst case
   * payloads lost - the count behind the recovery rate
 
+Not every edit applies to every image - the face swap only has something to do
+on a photo with a face in it - so a condition can cover fewer images than the
+run does. Those conditions are scored over the images they reached, the count
+is carried through the table, the chart labels and summary.json, and the images
+they missed are left grey in the heatmap rather than counted as passes.
+
 The charts adapt to the size of the run: up to 25 images every image is a dot
 and every heatmap cell carries its number; past that the columns show
 distributions and the heatmap is read as a pattern, sorted hardest-first.
@@ -128,8 +134,14 @@ def score(tm, path, stem, label, entry):
     }
 
 
-def summarise(records):
-    """Aggregate the per-image records into per-condition metrics."""
+def summarise(records, n_run_images):
+    """Aggregate the per-image records into per-condition metrics.
+
+    `n_run_images` is how many images the run covers, which is not always how
+    many a condition covers: an edit that does not apply to an image writes no
+    file, so it is scored over the subset it reached. Both numbers are kept, so
+    a 100% recovery rate over 12 of 100 images cannot be misread as 100 of 100.
+    """
     grouped = defaultdict(list)
     for record in records:
         grouped[record["condition"]].append(record)
@@ -142,6 +154,8 @@ def summarise(records):
         summary[label] = {
             "description": common.EDIT_DESCRIPTIONS.get(label, label),
             "n_images": len(rows),
+            "n_run_images": n_run_images,
+            "n_not_applicable": max(0, n_run_images - len(rows)),
             "detection_rate": mean(r["detected"] for r in rows),
             "payload_recovery_rate": mean(r["payload_recovered"] for r in rows),
             "mean_raw_bit_accuracy": mean(r["raw_bit_accuracy"] for r in rows),
@@ -204,6 +218,16 @@ def print_table(records, summary, threshold):
         "worse than that."
     )
 
+    # A condition with a smaller n is a different denominator, not a better
+    # result, and every rate on its row is over that smaller n.
+    partial = [(label, stats) for label, stats in summary.items()
+               if stats["n_not_applicable"]]
+    for label, stats in partial:
+        print(f"'{label}' applied to {stats['n_images']} of "
+              f"{stats['n_run_images']} images; the other "
+              f"{stats['n_not_applicable']} had nothing for it to change, and "
+              "its rates above are over the images it reached.")
+
     # Which images struggle is the question a 100-image run raises and a
     # per-condition table cannot answer.
     per_image = defaultdict(list)
@@ -249,6 +273,20 @@ def rank_images(records):
                                              image))
 
 
+def tick_labels(labels, short, summary):
+    """Condition names for an x axis, with an n under the ones that differ.
+
+    Every rate on a column is over that column's own images. When one edit
+    reached fewer of them, the bars are no longer comparable at a glance, so
+    the count goes on the axis where it cannot be missed.
+    """
+    counts = {label: summary[label]["n_images"] for label in labels}
+    if len(set(counts.values())) == 1:
+        return list(short)
+    return [f"{name}\nn = {counts[label]}"
+            for label, name in zip(labels, short)]
+
+
 def panel_rates(ax, labels, short, summary):
     """Headline rates: how often the watermark was found and read back."""
     style_axes(ax)
@@ -277,7 +315,7 @@ def panel_rates(ax, labels, short, summary):
     ax.set_ylim(0, 122)
     ax.set_yticks([0, 25, 50, 75, 100])
     ax.set_yticklabels(["0%", "25%", "50%", "75%", "100%"])
-    ax.set_xticks(x, short)
+    ax.set_xticks(x, tick_labels(labels, short, summary))
     ax.yaxis.grid(True, color=C_GRID, linewidth=1)
     ax.set_axisbelow(True)
     ax.set_title("How often the watermark survived", color=C_INK, fontsize=13,
@@ -318,6 +356,8 @@ def panel_accuracy(ax, labels, short, records, summary, threshold, large):
     rng = np.random.default_rng(0)
     dot_size, dot_alpha = (10, 0.5) if large else (34, 0.9)
     for i, values in enumerate(columns):
+        if not values:  # an edit that reached none of the images
+            continue
         jitter = rng.uniform(-0.13, 0.13, size=len(values))
         dots = ax.scatter(np.full(len(values), i) + jitter, values, s=dot_size,
                           facecolor=C_SERIES_1, edgecolor=C_SURFACE,
@@ -340,7 +380,7 @@ def panel_accuracy(ax, labels, short, records, summary, threshold, large):
     lowest = min([v for values in columns for v in values] + [threshold * 100])
     ax.set_ylim(max(0, lowest - 6), 101.5)
     ax.set_xlim(-0.6, len(labels) - 0.4)
-    ax.set_xticks(x, short)
+    ax.set_xticks(x, tick_labels(labels, short, summary))
     ax.yaxis.set_major_formatter(lambda v, _pos: f"{v:.0f}%")
     ax.yaxis.grid(True, color=C_GRID, linewidth=1)
     ax.set_axisbelow(True)
@@ -387,11 +427,16 @@ def panel_heatmap(fig, ax, labels, short, records, images, threshold, large,
 
     centre = threshold * 100
     cmap = heat_colormap()
+    # Grey for the cells with no record: the edit did not apply to that image
+    # (no face to swap, say). Leaving them uncoloured is the point - a missing
+    # cell must not read as a pass or as a failure.
     cmap.set_bad(C_GRID)
+    missing = bool(np.isnan(matrix).any())
+    filled = matrix[~np.isnan(matrix)]
     norm = matplotlib.colors.TwoSlopeNorm(
         vcenter=centre,
-        vmin=min(float(np.nanmin(matrix)), centre - 5),
-        vmax=max(float(np.nanmax(matrix)), centre + 1),
+        vmin=min(float(filled.min()) if filled.size else centre, centre - 5),
+        vmax=max(float(filled.max()) if filled.size else centre, centre + 1),
     )
     mesh = ax.imshow(matrix, cmap=cmap, norm=norm, aspect="auto")
 
@@ -417,6 +462,8 @@ def panel_heatmap(fig, ax, labels, short, records, images, threshold, large,
                        zorder=3)
         legend = ("colour = bit accuracy      ○ payload lost, watermark still "
                   "detected      ✕ watermark not detected")
+        if missing:
+            legend += "      grey = edit did not apply"
     else:
         for row, image in enumerate(images):
             for col, label in enumerate(labels):
@@ -430,6 +477,8 @@ def panel_heatmap(fig, ax, labels, short, records, images, threshold, large,
                         va="center", fontsize=8, color=mark_ink(norm(value)))
         legend = ("✓ payload recovered      ~ watermark detected only      "
                   "✗ not detected")
+        if missing:
+            legend += "      grey = edit did not apply"
 
     ax.set_xticks(np.arange(len(labels)), short, fontsize=9)
     ax.set_xticks(np.arange(len(labels) + 1) - 0.5, minor=True)
@@ -559,7 +608,7 @@ def main():
         print("Nothing to evaluate. Run 01_watermark.py and 02_edit.py first.")
         return 1
 
-    summary = summarise(records)
+    summary = summarise(records, len(manifest["images"]))
     threshold = (100 - common.correctable_bits()) / 100
     write_tables(records, summary)
     print_table(records, summary, threshold)

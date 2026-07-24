@@ -10,12 +10,17 @@ edit produced which file. The edits are defined in common.py:
   * centre crop           - a light reframing or border trim
   * unsharp mask, 300%    - aggressive sharpening, no model
   * AI x4 sharpening      - aggressive sharpening by a super-resolution model
+  * face swap             - the faces replaced with the reference face
 
     python 02_edit.py                      # every edit
     python 02_edit.py --edits sharpen_ai_x4 --keep   # redo just the slow one
 
 The AI edit downloads a small model on first use and is by far the slowest
 step; --edits and --keep exist so you can rerun it on its own.
+
+The face swap is the one edit that does not apply to every image: a photo with
+no face in it is skipped, no file is written, and step 3 scores that edit over
+the images it did apply to.
 """
 
 import argparse
@@ -77,6 +82,7 @@ def main(argv=None):
 
     written = 0
     failures = 0
+    skipped = defaultdict(int)
     elapsed = defaultdict(float)
     started_run = time.perf_counter()
 
@@ -90,6 +96,14 @@ def main(argv=None):
             started = time.perf_counter()
             try:
                 edited, suffix, save_kwargs = edit(image)
+            except common.EditNotApplicable as reason:
+                # Not a failure: this image has nothing for the edit to act on,
+                # e.g. a face swap on a photo with no face. No file is written,
+                # so step 3 scores this edit over the other images.
+                elapsed[label] += time.perf_counter() - started
+                skipped[label] += 1
+                done.append(f"{label} n/a ({reason})")
+                continue
             except Exception as exc:  # one bad edit should not sink the run
                 failures += 1
                 print(f"  ! {source.name} / {label}: {exc}")
@@ -103,7 +117,10 @@ def main(argv=None):
             edited.save(out_path, icc_profile=info.get("icc_profile"),
                         **save_kwargs)
             written += 1
-            done.append(f"{label} {edited.size[0]}x{edited.size[1]}")
+
+            note = common.EDIT_NOTES.get(label)
+            detail = note() if note else f"{edited.size[0]}x{edited.size[1]}"
+            done.append(f"{label} {detail}")
 
         # An ETA, because with 100 images the AI edit turns this into a step
         # you walk away from.
@@ -119,6 +136,17 @@ def main(argv=None):
           f"{common.rel(common.MODIFIED_DIR)}/")
     if failures:
         print(f"{failures} edit(s) failed; the rest are usable.")
+    for label, count in skipped.items():
+        print(f"{count} of {len(sources)} image(s) had nothing for the "
+              f"'{label}' edit to do, so it was scored over "
+              f"{len(sources) - count}.")
+
+    if common.FACE_SWAP_LABEL in edits:
+        import face_swap
+
+        line = face_swap.run_summary()
+        if line:
+            print(line)
 
     if written:
         print("\nTime spent per edit:")
