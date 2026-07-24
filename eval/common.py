@@ -39,6 +39,8 @@ RANDOM_SEED = 1234
 # ---------------------------------------------------------------------------
 
 EVAL_DIR = Path(__file__).resolve().parent
+# The authentic folder holds the photos to watermark plus one input that is not
+# a photo to watermark: the reference face used by the face-swap edit.
 AUTHENTIC_DIR = EVAL_DIR / "images" / "authentic"
 WATERMARKED_DIR = EVAL_DIR / "images" / "watermarked"
 MODIFIED_DIR = EVAL_DIR / "images" / "modified"
@@ -57,15 +59,22 @@ LABEL_SEP = "__"
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 
+# The face the face-swap edit pastes in, supplied by you alongside the photos
+# in images/authentic/. It is an input, not a subject: 01_watermark.py holds it
+# out, so it is never watermarked and never scored.
+REFERENCE_FACE_NAME = "reference.jpg"
+
 # ---------------------------------------------------------------------------
 # Image edits
 #
-# Five edits in two groups. The first three are the mundane ones TrustMark is
-# designed to survive: re-compression, rescaling, and a moderate crop. The last
+# Six edits in three groups. The first three are the mundane ones TrustMark is
+# designed to survive: re-compression, rescaling, and a moderate crop. The next
 # two are deliberately aggressive sharpening, which is a different kind of
 # attack - it amplifies or rewrites exactly the high-frequency detail the
-# watermark lives in. Each entry maps a label to a function that takes the
-# watermarked PIL image and returns (edited image, file suffix, save kwargs).
+# watermark lives in. The last is a face swap: an editorial change that rewrites
+# one region of the picture completely and leaves the rest alone. Each entry
+# maps a label to a function that takes the watermarked PIL image and returns
+# (edited image, file suffix, save kwargs).
 # ---------------------------------------------------------------------------
 
 JPEG_QUALITY = 40  # 1-95; lower is a harsher recompression
@@ -96,6 +105,18 @@ AI_SHARPEN_INPUT_SCALE = 0.5
 AI_SHARPEN_TILE = 256  # tile size, to bound memory; None = one pass
 AI_SHARPEN_TILE_PAD = 16  # overlap between tiles, cropped off again
 AI_SHARPEN_DEVICE = "auto"  # 'auto' | 'cpu' | 'mps' | 'cuda'
+
+# Face swapping: the faces in the watermarked image are replaced with the face
+# from images/authentic/reference.jpg (see face_swap.py). Unlike every other
+# edit here this one does not apply to every image - a photo with no face in it
+# is skipped rather than counted as a failure.
+FACE_SWAP_MAX_FACES = 4  # swap at most this many faces per image, biggest first
+FACE_SWAP_SCORE_THRESHOLD = 0.7  # detector confidence, 0-1; lower finds more
+FACE_SWAP_MARGIN = 0.10  # grow the blended ellipse past the detected box
+FACE_SWAP_FEATHER = 0.25  # fallback blend only: feather width, as a face width
+FACE_SWAP_SEAMLESS = True  # Poisson blend (matches skin tone); False = feather
+FACE_SWAP_DETECT_MAX_SIDE = 1024  # detect on a copy no larger than this
+FACE_SWAP_REFERENCE_PAD = 0.6  # context kept around the reference face
 
 
 def _edit_jpeg(img):
@@ -146,8 +167,20 @@ def _edit_ai_sharpen(img):
     return ai_sharpen.sharpen(img), ".png", {}
 
 
+def _edit_face_swap(img):
+    """Replace the faces with the reference face, leaving the rest untouched.
+
+    Imported lazily: OpenCV and the face detector are only needed when this
+    edit runs. Raises EditNotApplicable on an image with no face in it.
+    """
+    import face_swap
+
+    return face_swap.swap(img), ".png", {}
+
+
 SHARPEN_LABEL = f"sharpen_usm_{SHARPEN_PERCENT}pct"
 AI_SHARPEN_LABEL = "sharpen_ai_x4"
+FACE_SWAP_LABEL = "face_swap_reference"
 
 EDITS = {
     f"jpeg_q{JPEG_QUALITY}": _edit_jpeg,
@@ -155,7 +188,18 @@ EDITS = {
     f"crop_{int(CROP_KEEP_AREA * 100)}pct_area": _edit_crop,
     SHARPEN_LABEL: _edit_sharpen,
     AI_SHARPEN_LABEL: _edit_ai_sharpen,
+    FACE_SWAP_LABEL: _edit_face_swap,
 }
+
+
+class EditNotApplicable(RuntimeError):
+    """Raised by an edit that has nothing to do on a particular image.
+
+    A face swap on a landscape is not a failed edit, it is an edit with no
+    subject. 02_edit.py counts these separately from errors and writes no file,
+    so 03_evaluate.py simply scores that edit over fewer images.
+    """
+
 
 # Edits that need something beyond Pillow. Each maps a label to a callable
 # returning True when the edit can run; 02_edit.py drops the ones that cannot
@@ -166,7 +210,27 @@ def _ai_sharpen_ready(verbose=True):
     return ai_sharpen.available(verbose=verbose)
 
 
-EDIT_PREFLIGHT = {AI_SHARPEN_LABEL: _ai_sharpen_ready}
+def _face_swap_ready(verbose=True):
+    import face_swap
+
+    return face_swap.available(verbose=verbose)
+
+
+EDIT_PREFLIGHT = {
+    AI_SHARPEN_LABEL: _ai_sharpen_ready,
+    FACE_SWAP_LABEL: _face_swap_ready,
+}
+
+
+# Optional per-image note an edit can add to 02_edit.py's progress line, for
+# edits whose output size does not say what they did.
+def _face_swap_note():
+    import face_swap
+
+    return face_swap.describe_last()
+
+
+EDIT_NOTES = {FACE_SWAP_LABEL: _face_swap_note}
 
 # Label used for the untouched watermarked image, evaluated as a control.
 BASELINE_LABEL = "no_edit_baseline"
@@ -188,6 +252,10 @@ EDIT_DESCRIPTIONS = {
         "Real-ESRGAN general x4 super-resolution, resampled back to the "
         "original size (aggressive, AI model)"
     ),
+    FACE_SWAP_LABEL: (
+        f"Faces replaced with the one in {REFERENCE_FACE_NAME} "
+        "(editorial change, local: only the face region is rewritten)"
+    ),
 }
 
 # Short names for chart axes, where the full label is too long to read.
@@ -200,6 +268,7 @@ EDIT_SHORT_NAMES = {
     ),
     SHARPEN_LABEL: f"sharpen {SHARPEN_PERCENT}%\n(no AI)",
     AI_SHARPEN_LABEL: "sharpen x4\n(AI model)",
+    FACE_SWAP_LABEL: "face swap\n(reference)",
 }
 
 # ---------------------------------------------------------------------------
@@ -267,6 +336,37 @@ def list_images(folder):
         and not p.name.startswith(".")
         and p.suffix.lower() in IMAGE_EXTENSIONS
     )
+
+
+def reference_face_path():
+    """The reference face in images/authentic/, or None if it is not there.
+
+    reference.jpg is the documented name; any image file called "reference" is
+    accepted, so a PNG or a HEIC works without editing anything.
+    """
+    exact = AUTHENTIC_DIR / REFERENCE_FACE_NAME
+    if exact.is_file():
+        return exact
+    stem = Path(REFERENCE_FACE_NAME).stem.lower()
+    for path in list_images(AUTHENTIC_DIR):
+        if path.stem.lower() == stem:
+            return path
+    return None
+
+
+def list_cover_images():
+    """The images to watermark: everything in authentic/ bar the reference face.
+
+    The reference face shares the folder with the photos because it is an input
+    you supply, but it is not a subject of the experiment - watermarking it
+    would add a row to every table for an image you never chose to test.
+    """
+    reference = reference_face_path()
+    return [
+        path
+        for path in list_images(AUTHENTIC_DIR)
+        if reference is None or path.name != reference.name
+    ]
 
 
 def load_rgb(path):

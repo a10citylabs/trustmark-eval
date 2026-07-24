@@ -6,12 +6,15 @@ with TrustMark, and writes the result to images/watermarked/ as a lossless
 PNG. The payloads are recorded in results/payloads.json so step 3 knows the
 ground truth to compare the decoded bits against.
 
+One file in that folder is left alone: reference.jpg, the face the face-swap
+edit in step 2 pastes in. It is an input to an edit rather than a subject of
+the experiment, so it is neither watermarked nor scored.
+
     python 01_watermark.py
 """
 
 import random
 import sys
-from pathlib import Path
 
 import common
 
@@ -20,14 +23,23 @@ def main():
     common.ensure_dirs()
     common.register_optional_formats()
 
-    sources = common.list_images(common.AUTHENTIC_DIR)
+    sources = common.list_cover_images()
+    reference = common.reference_face_path()
     if not sources:
-        print(f"No images found in {common.rel(common.AUTHENTIC_DIR)}/")
+        print(f"No images to watermark in {common.rel(common.AUTHENTIC_DIR)}/")
+        if reference is not None:
+            print(f"({reference.name} is held out as the face-swap reference, "
+                  "so it does not count.)")
         print("Add a few JPEG or PNG files there, then run this script again.")
         print(f"Recognised extensions: {sorted(common.IMAGE_EXTENSIONS)}")
         return 1
 
     print(f"Found {len(sources)} image(s) in {common.rel(common.AUTHENTIC_DIR)}/")
+    if reference is not None:
+        print(f"Holding out {reference.name} as the face-swap reference face")
+    else:
+        print(f"No {common.REFERENCE_FACE_NAME} in that folder, so the "
+              f"'{common.FACE_SWAP_LABEL}' edit will be skipped in step 2")
     # New payloads invalidate whatever the previous run produced downstream.
     common.clear_folder(common.WATERMARKED_DIR)
     common.clear_folder(common.MODIFIED_DIR)

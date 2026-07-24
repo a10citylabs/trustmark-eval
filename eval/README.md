@@ -8,15 +8,16 @@ You drop your own images into `images/authentic/` and run three scripts:
 | Script | Reads | Writes | What it does |
 |---|---|---|---|
 | `01_watermark.py` | `images/authentic/` | `images/watermarked/` | Embeds a unique random payload in each image |
-| `02_edit.py` | `images/watermarked/` | `images/modified/` | Applies 5 edits, one labelled file per edit |
+| `02_edit.py` | `images/watermarked/` | `images/modified/` | Applies 6 edits, one labelled file per edit |
 | `03_evaluate.py` | `images/modified/` | `results/` | Decodes everything, scores it, and plots the comparison |
 
-The edits come in two groups. Three are the mundane ones that happen to images
+The edits come in three groups. Three are the mundane ones that happen to images
 in the real world — JPEG re-compression, downscaling, and a crop — and are
 exactly the kind of "non-editorial transformation" TrustMark is trained to
 withstand. Two are deliberately aggressive sharpening, which is the interesting
 case: sharpening works on exactly the high-frequency detail the watermark lives
-in.
+in. The last one is a face swap: an *editorial* change, and the only one here
+that rewrites a region of the picture instead of touching every pixel.
 
 | Edit | What it does |
 |---|---|
@@ -25,11 +26,21 @@ in.
 | `crop_80pct_area` | Centre crop keeping 80% of the area |
 | `sharpen_usm_300pct` | Unsharp mask at 300%, radius 3 px — a fixed convolution, no model |
 | `sharpen_ai_x4` | A super-resolution network re-renders the image, then it is resampled back to its original size |
+| `face_swap_reference` | The faces are replaced with the face from `images/authentic/reference.jpg` |
 
 The two sharpen edits are a matched pair. The first amplifies the detail that is
 already in the pixels; the second replaces it with detail a network invented.
 The watermark has to survive being *amplified* in one and *rewritten* in the
 other, and they do not fail the same way.
+
+The face swap asks a different question. It destroys the watermark inside the
+face and leaves the rest of the frame alone, so the payload usually still comes
+back — the swapped region is a few percent of the pixels, and the decoder gets
+to vote with the other ninety-odd. That is the honest reading of a watermark: it
+says *this file came from us*, not *nothing in this file was changed*. It is
+also the one edit that does not apply to every image: a photo with no face in it
+is skipped rather than counted, so that column is scored over fewer images and
+says so.
 
 ---
 
@@ -75,11 +86,16 @@ The first script run downloads the TrustMark encoder and decoder weights
 happens once; later runs start immediately. If your network needs a proxy, set
 `HTTPS_PROXY` before running.
 
-The AI edit needs one more thing: a ~4.7 MB model file, downloaded on first use
-from the Real-ESRGAN releases on GitHub into `eval/models/`. PyTorch is already
-there as a TrustMark dependency, so nothing else to install. If the download
-cannot happen — no network, a proxy in the way — `02_edit.py` says so, skips
-that one edit and runs the other four.
+Two of the edits fetch a small model on first use, into `eval/models/`:
+
+- the AI sharpener, a ~4.7 MB Real-ESRGAN file from GitHub. PyTorch is already
+  there as a TrustMark dependency, so nothing else to install;
+- the face swap, a ~230 KB YuNet face detector from the OpenCV model zoo. This
+  one needs `opencv-python`, which `requirements.txt` installs.
+
+Either download failing — no network, a proxy in the way — costs you that one
+edit and nothing else: `02_edit.py` says what is missing, skips it, and runs the
+rest.
 
 ## 3. Add your images
 
@@ -88,6 +104,12 @@ Put anywhere from 5 to 100 images into `images/authentic/`:
 ```sh
 open images/authentic        # drag your photos into the Finder window
 ```
+
+Then add one more file to that same folder: **`reference.jpg`**, a photo of the
+face the face-swap edit pastes in. One clear, roughly front-on face is all it
+needs. It is an input rather than a subject — `01_watermark.py` holds it out, so
+it is never watermarked and never appears in the results. Without it, the face
+swap is skipped and the other five edits run as usual.
 
 Notes for macOS:
 
@@ -144,9 +166,16 @@ resize_50pct               100      100%        99%     1    98.4%   97.2%   94.
 crop_80pct_area            100      100%        78%    22    96.4%   93.2%   86.5%
 sharpen_usm_300pct         100      100%        20%    80    90.7%   85.1%   70.6%
 sharpen_ai_x4              100       77%         0%   100    68.4%   56.5%   40.0%
+face_swap_reference         41      100%        95%     2    98.5%   96.9%   95.1%
 ```
 
 followed by the handful of images that struggled the most across the edits.
+
+Note the `n` on the face-swap row: only 41 of those 100 images had a face in
+them, and every rate on that row is over those 41. The scripts never pretend an
+edit reached an image it did not — the count is carried through the table,
+`summary.json` (`n_images`, `n_run_images`, `n_not_applicable`), the chart's
+axis labels, and the heatmap, where the images it missed stay grey.
 
 ### The metrics
 
@@ -183,8 +212,13 @@ Three stacked panels, all sharing the same conditions along the x axis:
    red below the error-correction limit and blue above it, so the pass/fail
    boundary is where the colour turns. Up to 25 images every cell carries its
    number; past that the numbers stop fitting, the hardest few rows are named
-   in the margin, and a marker flags the cells that actually failed. The full
-   per-image numbers are always in `results.csv`.
+   in the margin, and a marker flags the cells that actually failed. Cells left
+   grey are images the edit did not apply to. The full per-image numbers are
+   always in `results.csv`.
+
+Where an edit reached fewer images than the run has, its axis label carries an
+`n =` line in the top two panels — the bars are rates over that column's own
+images, and a 100% over 41 images is not the same claim as a 100% over 100.
 
 ## 5. Change the experiment
 
@@ -204,6 +238,11 @@ SHARPEN_PERCENT = 300   # unsharp mask strength; 150% is already strong
 
 AI_SHARPEN_INPUT_SCALE = 0.5  # the size the model sees; the speed/quality dial
 AI_SHARPEN_DEVICE = "auto"    # 'auto' | 'cpu' | 'mps' | 'cuda'
+
+FACE_SWAP_MAX_FACES = 4       # how many faces per image to swap, biggest first
+FACE_SWAP_SCORE_THRESHOLD = 0.7  # detector confidence; lower finds more faces
+FACE_SWAP_MARGIN = 0.10       # how far past the detected box to blend
+FACE_SWAP_SEAMLESS = True     # Poisson blend; False pastes with a feather
 ```
 
 Experiments worth trying:
@@ -223,10 +262,17 @@ Experiments worth trying:
   faster and still sharpens, because the model's 4x output lands exactly on the
   original size. Below 0.25 the output has to be upscaled to fit, which blurs
   it — that is a different edit, not a sharpen.
-- **Add a sixth edit.** Write a function in `common.py` that takes a PIL image
+- **Swap in a harder face.** The face swap is only as destructive as the
+  reference makes it. A reference face at a different angle or in different
+  light produces a bigger blended region and a bigger dent in the bit accuracy;
+  `FACE_SWAP_MARGIN = 0.4` widens the rewritten area past the face itself.
+- **Add a seventh edit.** Write a function in `common.py` that takes a PIL image
   and returns `(edited_image, ".png", {})`, then add it to the `EDITS` dict —
   rotation, brightness, added noise, or a screenshot-style re-encode. Both the
-  editing and evaluation scripts pick it up with no other changes.
+  editing and evaluation scripts pick it up with no other changes. If it cannot
+  apply to some images, raise `common.EditNotApplicable`, the way the face swap
+  does on a photo with no face: those images are scored out of that condition
+  rather than counted as failures.
 
 Changing `MODEL_TYPE`, `ENCODING_NAME` or `WM_STRENGTH` invalidates the images
 you already generated, so rerun all three scripts. `03_evaluate.py` stops with a
@@ -244,6 +290,19 @@ md5 check and re-fetched on the next run.
 
 **`ModuleNotFoundError: No module named 'trustmark'`** — the virtual environment
 is not active. Run `source .venv/bin/activate` from the `eval/` folder.
+
+**`face swapping unavailable: no reference.jpg in images/authentic/`** — add a
+photo called `reference.jpg` to that folder. `no face found in reference.jpg`
+means the detector could not find a face in it; use a clearer, more front-on
+photo, or lower `FACE_SWAP_SCORE_THRESHOLD` in `common.py`.
+
+**`face swapping unavailable: OpenCV is not installed`** — run
+`pip install opencv-python`. The other five edits do not need it.
+
+**The face swap ran on far fewer images than you expected** — the detector is
+strict by design. `FACE_SWAP_SCORE_THRESHOLD = 0.5` finds more faces, at the
+cost of the occasional swap onto something that is not one. Step 2 prints how
+many images had no detectable face, and step 3 keeps the count in every table.
 
 **A crop or resize scores badly on some images** — that is a result, not a bug.
 TrustMark spreads the watermark across the whole image and tolerates roughly 20%
